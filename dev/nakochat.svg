@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 320">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f9d423"/>
+      <stop offset="50%" stop-color="#ff4e50"/>
+      <stop offset="100%" stop-color="#8a3ffc"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.1"/>
+    </linearGradient>
+    <filter id="soft">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+  </defs>
+  <rect width="960" height="320" rx="32" fill="url(#bg)"/>
+  <circle cx="200" cy="160" r="120" fill="#ffffff" fill-opacity="0.18" filter="url(#soft)"/>
+  <circle cx="760" cy="140" r="140" fill="#ffffff" fill-opacity="0.12" filter="url(#soft)"/>
+  <rect x="40" y="40" width="880" height="240" rx="28" fill="#0f0a1f" fill-opacity="0.12"/>
+  <text x="60" y="180" font-family="Arial Black, Arial, sans-serif" font-size="128" fill="#ffffff" letter-spacing="-4">
+    nakochat
+  </text>
+  <text x="64" y="220" font-family="Arial, sans-serif" font-size="28" fill="#fff8e1" opacity="0.9">
+    bright, playful, all-korean llm
+  </text>
+  <rect x="60" y="90" width="140" height="28" rx="14" fill="#ffffff" fill-opacity="0.24"/>
+  <text x="76" y="110" font-family="Arial, sans-serif" font-size="16" fill="#0f0a1f" font-weight="bold">
+    nanochat → nakochat
+  </text>
+  <rect x="820" y="50" width="90" height="24" rx="12" fill="url(#glow)"/>
+  <rect x="810" y="230" width="110" height="26" rx="13" fill="url(#glow)" opacity="0.8"/>
+</svg>

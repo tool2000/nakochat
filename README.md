@@ -1,6 +1,6 @@
-# nanochat
+# nakochat
 
-![nanochat logo](dev/nanochat.png)
+![nakochat logo](dev/nakochat.svg)
 
 > The best ChatGPT that $100 can buy.
 
