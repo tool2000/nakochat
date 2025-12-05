@@ -10,9 +10,10 @@
 # 3) Example launch with wandb logging, but see below for setting up wandb first:
 # WANDB_RUN=speedrun screen -L -Logfile speedrun.log -S speedrun bash speedrun.sh
 
-# Default intermediate artifacts directory is in ~/.cache/nanochat
+# Default intermediate artifacts directory (override with env if you want)
 export OMP_NUM_THREADS=1
-export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
+# : "${NANOCHAT_BASE_DIR:=$HOME/.cache/nanochat_ko}"
+NANOCHAT_BASE_DIR=$HOME/.cache/nanochat_ko
 mkdir -p $NANOCHAT_BASE_DIR
 
 # -----------------------------------------------------------------------------
@@ -55,15 +56,12 @@ source "$HOME/.cargo/env"
 # Build the rustbpe Tokenizer
 uv run maturin develop --release --manifest-path rustbpe/Cargo.toml
 
-# Download the first ~2B characters of pretraining dataset
-# look at dev/repackage_data_reference.py for details on how this data was prepared
-# each data shard is ~250M chars
-# so we download 2e9 / 250e6 = 8 data shards at this point
-# each shard is ~100MB of text (compressed), so this is about ~800MB of data on disk
-python -m nanochat.dataset -n 8
-# Immediately also kick off downloading more shards in the background while tokenizer trains
-# See comment below for why 240 is the right number here
-python -m nanochat.dataset -n 240 &
+# Download a few Korean shards for tokenizer training
+# Each shard in minpeter/fineweb-2-edu-korean-raw is an Arrow file (~500MB compressed).
+# Grab just a handful up front to start quickly.
+python -m nanochat.dataset -n 3
+# Immediately also kick off downloading more train shards in the background while tokenizer trains
+python -m nanochat.dataset -n 50 &
 DATASET_DOWNLOAD_PID=$!
 # train the tokenizer with vocab size 2**16 = 65536 on ~2B characters of data
 python -m scripts.tok_train --max_chars=2000000000
@@ -74,16 +72,13 @@ python -m scripts.tok_eval
 # Base model (pretraining)
 
 # The d20 model is 561M parameters.
-# Chinchilla says #tokens = 20X #params, so we need 561e6 * 20 = 11.2B tokens.
-# Assume our tokenizer is 4.8 chars/token, this is 11.2B * 4.8 ~= 54B chars.
-# At 250M chars/shard, this is 54B / 250M ~= 216 shards needed for pretraining.
-# Round up to 240 for safety. At ~100MB/shard, this downloads ~24GB of data to disk.
-# (The total number of shards available in the entire dataset is 1822.)
+# This Korean subset has only 25 train shards available (~250GB compressed total),
+# so we train across all of them and rely on multiple epochs to hit the token budget.
 echo "Waiting for dataset download to complete..."
 wait $DATASET_DOWNLOAD_PID
 
 # Number of processes/GPUs to use
-NPROC_PER_NODE=8
+NPROC_PER_NODE=1
 
 # pretrain the d20 model
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=20 --run=$WANDB_RUN
@@ -94,10 +89,6 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval
 
 # -----------------------------------------------------------------------------
 # Midtraining (teach the model conversation special tokens, tool use, multiple choice)
-
-# download 2.3MB of synthetic identity conversations to impart a personality to nanochat
-# see dev/gen_sft_data.py for details on how this data was prepared and to get a sense of how you can easily tune it
-curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run midtraining and eval the model
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.mid_train -- --run=$WANDB_RUN

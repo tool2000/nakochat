@@ -12,6 +12,8 @@ torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+import json
+import urllib.request
 import wandb
 import torch
 import torch.distributed as dist
@@ -24,11 +26,7 @@ from nanochat.engine import Engine
 from scripts.chat_eval import run_chat_eval
 
 from tasks.common import TaskMixture
-from tasks.arc import ARC
-from tasks.gsm8k import GSM8K
-from tasks.smoltalk import SmolTalk
 from tasks.customjson import CustomJSON
-from tasks.spellingbee import SimpleSpelling, SpellingBee
 
 # -----------------------------------------------------------------------------
 # SFT Hyperparameters
@@ -79,18 +77,46 @@ orig_model = model # original, uncompiled model
 engine = Engine(model, tokenizer) # will be used for inline model evaluation only
 
 # -----------------------------------------------------------------------------
-# Task data mixture we'll train on
-identity_conversations_filepath = os.path.join(get_base_dir(), "identity_conversations.jsonl")
+# Task data mixture we'll train on (Korean only)
+base_dir = get_base_dir()
+KO_SFT_JSONL = os.path.join(base_dir, "korean_sft.jsonl")
+KO_ALPACA_SRC = "https://raw.githubusercontent.com/Beomi/KoAlpaca/main/KoAlpaca_v1.1.jsonl"
+
+def ensure_korean_sft():
+    """
+    Downloads KoAlpaca v1.1 JSONL and converts to our conversation JSONL format.
+    Each line has instruction/input/output; we merge instruction and input for the user turn.
+    """
+    if os.path.exists(KO_SFT_JSONL):
+        return KO_SFT_JSONL
+
+    print0(f"Downloading Korean SFT data from {KO_ALPACA_SRC} ...")
+    with urllib.request.urlopen(KO_ALPACA_SRC) as resp, open(KO_SFT_JSONL, "w", encoding="utf-8") as out:
+        n = 0
+        for line in resp:
+            if not line:
+                continue
+            ex = json.loads(line.decode("utf-8"))
+            instr = ex.get("instruction", "").strip()
+            inp = ex.get("input", "").strip()
+            user_msg = instr if not inp else f"{instr}\n{inp}"
+            assistant_msg = ex.get("output", "").strip()
+            if not user_msg or not assistant_msg:
+                continue
+            messages = [
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": assistant_msg},
+            ]
+            out.write(json.dumps(messages, ensure_ascii=False) + "\n")
+            n += 1
+    print0(f"Wrote Korean SFT JSONL ({n} conversations) to {KO_SFT_JSONL}")
+    return KO_SFT_JSONL
+
+ko_sft_path = ensure_korean_sft()
 train_ds = TaskMixture([
-    ARC(subset="ARC-Easy", split="train"), # 2.3K rows
-    ARC(subset="ARC-Challenge", split="train"), # 1.1K rows
-    GSM8K(subset="main", split="train"), # 8K rows
-    SmolTalk(split="train", stop=10_000), # 10K rows of smoltalk
-    CustomJSON(filepath=identity_conversations_filepath), # 1K rows of synthetic identity conversations
-    SimpleSpelling(size=300, split="train"), # 300 rows of Simple Spelling (e.g. spell the word 'apple')
-    SpellingBee(size=300, split="train"), # 300 rows of Spelling Bee (e.g. how many 'r' are in 'strawberry'?)
-]) # 2.3K + 1.1K + 8K + 10K + 1K + 0.3K + 0.3K = 23K rows
-val_ds = SmolTalk(split="test") # general conversations, 24K rows (though we don't actually use all of it)
+    CustomJSON(filepath=ko_sft_path),
+])
+val_ds = CustomJSON(filepath=ko_sft_path) # reuse for val (could be split further if desired)
 
 # -----------------------------------------------------------------------------
 # DataLoader

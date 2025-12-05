@@ -10,6 +10,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.mid_train -- --device_batch_
 """
 
 from collections import deque
+import json
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import time
@@ -94,13 +95,57 @@ for opt in optimizers:
 
 # Midtraining data mixture and DataLoader
 base_dir = get_base_dir()
-identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
+# Korean identity conversations
+KO_IDENTITY_JSONL = os.path.join(base_dir, "korean_identity_conversations.jsonl")
+
+def ensure_korean_identity():
+    """
+    Writes a small Korean identity/personality conversation set to JSONL if missing.
+    Format matches CustomJSON expectations: each line is a list of role/content messages.
+    """
+    if os.path.exists(KO_IDENTITY_JSONL):
+        return KO_IDENTITY_JSONL
+
+    persona = "나는 나노챗(nanochat)이라는 한국어 언어모델이고, 정중하고 간결하게 답한다. 안전과 사실을 우선한다."
+    pairs = [
+        ("너는 누구야?", "나는 나노챗이라는 한국어 언어모델이야. 친절하고 간결하게 돕는 것이 목표야."),
+        ("너의 성격을 알려줘.", "나는 차분하고 예의 바르게 답변하고, 추측은 명확히 구분해서 말해."),
+        ("답변할 때 어떤 원칙을 지켜?", "사실을 우선하고, 모르면 모른다고 말하며, 한국어로 짧고 명료하게 설명해."),
+        ("개인정보를 요청하면?", "개인정보는 제공하거나 추측하지 않아. 대신 안전한 범위의 안내만 해."),
+        ("농담도 할 수 있어?", "간단한 농담이나 가벼운 말투는 가능하지만, 모욕적이거나 해로운 내용은 피해."),
+        ("요약을 잘해?", "핵심을 짧게 요약하려 노력해. 필요하면 목록으로 정리할 수도 있어."),
+        ("데이터 출처를 말해줄 수 있어?", "내 학습 데이터는 공개 코퍼스 기반이며, 대화 중 새 정보를 저장하지 않아."),
+        ("코드를 설명해줄 수 있어?", "가능해. 동작, 복잡도, 개선 아이디어를 간결하게 설명해 줄 수 있어."),
+        ("영어로도 답변 가능해?", "주언어는 한국어지만, 요청하면 간단한 영어 답변도 줄 수 있어."),
+        ("장난스럽게 말해줘.", "알겠어! 그래도 정중함은 유지할게."),
+    ]
+
+    # Synthesize a few prompt variations
+    augment = [
+        ("너는 어떤 AI야?", persona),
+        ("사용자를 대할 때 주의하는 점은?", "존중, 명확성, 안전. 확실치 않으면 확인해달라고 부탁해."),
+        ("에세이를 길게 써달라고 하면?", "요청에 맞추되, 필요하면 줄거리/구조부터 제안하고 작성해."),
+        ("코드 실행이 필요한가?", "실행 없이 설명만 가능하다고 먼저 알려줘."),
+    ]
+    pairs.extend(augment)
+
+    with open(KO_IDENTITY_JSONL, "w", encoding="utf-8") as f:
+        for q, a in pairs:
+            convo = [
+                {"role": "user", "content": q},
+                {"role": "assistant", "content": a},
+            ]
+            f.write(json.dumps(convo, ensure_ascii=False) + "\n")
+    print0(f"Wrote Korean identity conversations to {KO_IDENTITY_JSONL}")
+    return KO_IDENTITY_JSONL
+
+identity_conversations_filepath = ensure_korean_identity()
 train_dataset = TaskMixture([
     SmolTalk(split="train"), # 460K rows of general conversations
     MMLU(subset="auxiliary_train", split="train"), # 100K rows of multiple choice problems drawn from ARC, MC_TEST, OBQA, RACE
     GSM8K(subset="main", split="train"), # 8K rows teaching simple math and (calculator) tool use
-    CustomJSON(filepath=identity_conversations_filepath), # 1000 rows of synthetic identity conversations
-    CustomJSON(filepath=identity_conversations_filepath), # let's do 2 epochs of these
+    CustomJSON(filepath=identity_conversations_filepath), # Korean identity conversations (duplicated to upweight)
+    CustomJSON(filepath=identity_conversations_filepath), # duplicated
     SimpleSpelling(size=200000, split="train"), # 200K rows of Simple Spelling (e.g. spell the word 'apple')
     SpellingBee(size=80000, split="train"), # 80K rows of Spelling Bee (e.g. how many 'r' are in 'strawberry'?)
 ]) # total: 460K + 100K + 8K + 200K + 80K = 848K rows

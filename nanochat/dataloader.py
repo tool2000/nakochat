@@ -2,6 +2,7 @@ from collections import deque
 
 import torch
 import pyarrow.parquet as pq
+import pyarrow.ipc as ipc
 
 from nanochat.common import get_dist_info
 from nanochat.dataset import list_parquet_files
@@ -25,31 +26,60 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
     # infinite iterator over document batches (list of text strings)
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     def document_batches():
-        parquet_paths = list_parquet_files()
-        parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
+        parquet_paths = list_parquet_files(split=split)
         resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
         pq_idx = resume_pq_idx # we kick off parquet files at the resume index (or by default just 0)
         while True: # iterate infinitely (multi-epoch)
             while pq_idx < len(parquet_paths): # iterate over all parquet files
                 filepath = parquet_paths[pq_idx]
-                pf = pq.ParquetFile(filepath)
+                is_parquet = filepath.endswith(".parquet")
+                if is_parquet:
+                    pf = pq.ParquetFile(filepath)
+                    num_chunks = pf.num_row_groups
+                    read_chunk = lambda idx: pf.read_row_group(idx)
+                    to_list = lambda chunk: chunk.column('text').to_pylist()
+                    chunk_iterable = None
+                else:
+                    # Try Arrow file first, fall back to stream
+                    chunk_iterable = None
+                    try:
+                        reader = ipc.open_file(filepath)
+                        num_chunks = reader.num_record_batches
+                        read_chunk = lambda idx: reader.get_batch(idx)
+                        to_list = lambda batch: batch.column('text').to_pylist()
+                    except Exception:
+                        reader = ipc.open_stream(filepath)
+                        num_chunks = None  # unknown
+                        chunk_iterable = enumerate(reader)
+                        to_list = lambda batch: batch.column('text').to_pylist()
+
                 # Start from resume point if resuming on same file, otherwise from DDP rank
-                # I know this state resumption is a little bit tricky and a little bit hacky... sigh.
                 if resume_rg_idx is not None:
-                    base_idx = resume_rg_idx // ddp_world_size # in units of ddp_world_size
-                    base_idx += 1 # advance by 1 so that we definitely don't repeat data after resuming
+                    base_idx = resume_rg_idx // ddp_world_size
+                    base_idx += 1
                     rg_idx = base_idx * ddp_world_size + ddp_rank
-                    resume_rg_idx = None # set to None as we only want to do this a single time
+                    resume_rg_idx = None
                 else:
                     rg_idx = ddp_rank
-                while rg_idx < pf.num_row_groups:
-                    rg = pf.read_row_group(rg_idx)
-                    batch = rg.column('text').to_pylist() # each batch is a parquet group, e.g. 1024 rows
-                    # the tokenizer encode might want to go in even smaller batches, e.g. 128 rows
-                    for i in range(0, len(batch), tokenizer_batch_size):
-                        yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx)
-                    rg_idx += ddp_world_size # advance to the next row group (in DDP)
+
+                if chunk_iterable is not None:
+                    # Stream reader path (no random access)
+                    for idx, batch in chunk_iterable:
+                        if idx < rg_idx or (idx - ddp_rank) % ddp_world_size != 0:
+                            continue
+                        chunk = batch
+                        batch_list = to_list(chunk)
+                        for i in range(0, len(batch_list), tokenizer_batch_size):
+                            yield batch_list[i:i+tokenizer_batch_size], (pq_idx, idx)
+                    # cannot resume precisely in stream mode, but streams are rare
+                else:
+                    while rg_idx < num_chunks:
+                        chunk = read_chunk(rg_idx)
+                        batch = to_list(chunk)
+                        for i in range(0, len(batch), tokenizer_batch_size):
+                            yield batch[i:i+tokenizer_batch_size], (pq_idx, rg_idx)
+                        rg_idx += ddp_world_size
                 pq_idx += 1 # advance to the next parquet file
     batches = document_batches()
 
